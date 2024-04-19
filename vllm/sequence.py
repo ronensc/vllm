@@ -80,13 +80,14 @@ class RequestMetrics:
 
     Attributes:
         arrival_time: The time when the request arrived.
+        last_token_time: The time when the last token was generated.
         first_scheduled_time: The time when the request was first scheduled.
         first_token_time: The time when the first token was generated.
         time_in_queue: The time the request spent in the queue.
         finished_time: The time when the request was finished.
     """
     arrival_time: float
-    last_token_time: float
+    last_token_time: Optional[float]
     first_scheduled_time: Optional[float]
     first_token_time: Optional[float]
     time_in_queue: Optional[float]
@@ -442,15 +443,29 @@ class SequenceGroup:
     def lora_int_id(self) -> int:
         return self.lora_request.lora_int_id if self.lora_request else 0
 
-    def get_last_latency(self, now: float) -> float:
-        """Gets last token latency for Request level timings."""
+    def maybe_get_last_latency(self, now: float) -> Optional[float]:
+        """Sets the last token time for Request level timings."""
+        # If prompt not done, return None.
+        if self.get_num_uncomputed_tokens() > 0:
+            return None
+            
+        # Otherwise return token latency.
         latency = now - self.metrics.last_token_time
         self.metrics.last_token_time = now
         return latency
 
     def maybe_set_first_token_time(self, time: float) -> None:
         """Sets the first token time for Request level timings."""
-        if self.metrics.first_token_time is None:
+        # For the case of chunked_prefill, get_num_uncomputed_tokens=0
+        #   implies that we have computed the entire prompt and have 
+        #   therefore generated the first token.
+        #
+        # Note: in a case where a sequence_group is swapped and 
+        #   recomputed, the time between iterations is counted
+        #   in TPOT, rather than recalculating TTFT (since from the )
+        #   POV of the user, there is simply a long generation delay.
+        if (self.metrics.first_token_time is None and
+            self.get_num_uncomputed_tokens() == 0):
             self.metrics.first_token_time = time
 
     def maybe_set_first_scheduled_time(self, time: float) -> None:
