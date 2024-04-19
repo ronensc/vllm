@@ -554,114 +554,135 @@ class LLMEngine:
 
     def _get_stats(self,
                    scheduler_outputs: Optional[SchedulerOutputs]) -> Stats:
-        """Get Stats to be Logged to Prometheus."""
+        """Get Stats to be Logged to StdOut and Prometheus."""
         now = time.time()
 
-        # KV Cache Usage in %.
+        # System State (_sys suffix).
+        #   Scheduler State
+        num_running_sys = len(self.scheduler.running)
+        num_swapped_sys = len(self.scheduler.swapped)
+        num_waiting_sys = len(self.scheduler.waiting)
+        
+        #   KV Cache Usage in %.
         num_total_gpu = self.cache_config.num_gpu_blocks
         num_free_gpu = self.scheduler.block_manager.get_num_free_gpu_blocks()
-        gpu_cache_usage = 1.0 - (num_free_gpu / num_total_gpu)
-
+        gpu_cache_usage_sys = 1.0 - (num_free_gpu / num_total_gpu)
         num_total_cpu = self.cache_config.num_cpu_blocks
-        cpu_cache_usage = 0.
+        cpu_cache_usage_sys = 0.
         if num_total_cpu > 0:
             num_free_cpu = self.scheduler.block_manager.get_num_free_cpu_blocks(
             )
-            cpu_cache_usage = 1.0 - (num_free_cpu / num_total_cpu)
+            cpu_cache_usage_sys = 1.0 - (num_free_cpu / num_total_cpu) 
 
-        # Scheduler State
-        num_running = len(self.scheduler.running)
-        num_swapped = len(self.scheduler.swapped)
-        num_waiting = len(self.scheduler.waiting)
-
-        # Iteration stats if we have scheduler output.
-        num_prompt_tokens = 0
-        num_generation_tokens = 0
-        num_prompt_tokens_lst = []
-        num_generation_tokens_lst = []
-        request_n = []
-        request_best_of = []
-        time_to_first_tokens = []
-        time_per_output_tokens = []
+        # Iteration Stats (_iter suffix).
+        num_prompt_tokens_iter = 0
+        num_generation_tokens_iter = 0
+        time_to_first_tokens_iter = []
+        time_per_output_tokens_iter = []
+        
+        # Request Stats (_requests suffix).
+        #   Latency Timings.
         time_e2e_requests = []
-        finished_reason_counter = CollectionsCounter()
+        time_queue_requests = []
+        time_inference_requests = []
+        time_prefill_requests = []
+        time_decode_requests = []
+        #   Metadata.
+        n_requests = []
+        best_of_requests = []
+        num_prompt_tokens_requests = []
+        num_generation_tokens_requests = []
+        max_num_generation_tokens_requests = []
+        finished_reason_requests = CollectionsCounter()
+
         if scheduler_outputs is not None:
-            prompt_run = scheduler_outputs.num_prefill_groups > 0
-
-            # Number of Tokens
-            if prompt_run:
-                num_prompt_tokens_lst = [
-                    len(scheduled_seq_group.seq_group.prompt_token_ids)
-                    for scheduled_seq_group in
-                    scheduler_outputs.scheduled_seq_groups
-                ]
-                num_prompt_tokens = sum(num_prompt_tokens_lst)
-                num_generation_tokens = sum(
-                    scheduled_seq_group.seq_group.num_seqs()
-                    for scheduled_seq_group in
-                    scheduler_outputs.scheduled_seq_groups)
-            else:
-                num_generation_tokens = scheduler_outputs.num_batched_tokens
-                num_generation_tokens_lst = [
-                    seq.get_output_len() for scheduled_seq_group in
-                    scheduler_outputs.scheduled_seq_groups for seq in
-                    scheduled_seq_group.seq_group.get_finished_seqs()
-                ]
-
-            # Sampling Params
-            if prompt_run:
-                request_n = [
-                    scheduled_seq_group.seq_group.sampling_params.n
-                    for scheduled_seq_group in
-                    scheduler_outputs.scheduled_seq_groups
-                ]
-                request_best_of = [
-                    scheduled_seq_group.seq_group.sampling_params.best_of
-                    for scheduled_seq_group in
-                    scheduler_outputs.scheduled_seq_groups
-                ]
-
-            # Latency Timings
-            time_last_iters = []
             for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
-                seq_group = scheduled_seq_group.seq_group
-                # Time since last token.
+                # Iteration time.
                 # (n.b. updates seq_group.metrics.last_token_time)
-                time_last_iters.append(seq_group.get_last_latency(now))
-                # Time since arrival for all finished requests.
+                latency = scheduled_seq_group.seq_group.maybe_get_last_latency(now)
+
+                # Number of tokens (for throughput calculations).
+                # Because of chunked prefill, we can have prefills and decodes in the same batch.
+                # If token_chunk_size > 1, this seq_group is a chunk of a prefill.
+                # If token_chunk_size = 1, this seq_group is a decode.
+                if scheduled_seq_group.token_chunk_size > 1:
+                    num_prompt_tokens_iter += scheduled_seq_group.token_chunk_size
+                    if latency is not None:
+                        time_to_first_tokens_iter.append(latency)
+                else:
+                    num_generation_tokens_iter += 1
+                    assert latency is not None
+                    time_per_output_tokens_iter.append(latency)
+
+                seq_group = scheduled_seq_group.seq_group
+                
+                # Because of chunked prefill, we can have a single sequence group
+                # that does multiple prompt_runs. To prevent logging the same metadata
+                # more than once per request, we standardize on logging request level
+                # information for finished requests, which can only happen once.
                 if seq_group.is_finished():
-                    time_e2e_requests.append(now -
-                                             seq_group.metrics.arrival_time)
-
-            time_to_first_tokens = time_last_iters if prompt_run else []
-            time_per_output_tokens = [] if prompt_run else time_last_iters
-
-            # Finished Requests
-            for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
-                if not scheduled_seq_group.seq_group.is_finished():
-                    continue
-                finished_reason_counter += CollectionsCounter([
-                    SequenceStatus.get_finished_reason(seq.status) for seq in
-                    scheduled_seq_group.seq_group.get_finished_seqs()
-                ])
+                    # Latnecy timings.
+                    time_e2e_requests.append(
+                        now - 
+                        seq_group.metrics.arrival_time)
+                    time_queue_requests.append(
+                        seq_group.metrics.first_scheduled_time -
+                        seq_group.metrics.arrival_time)
+                    time_prefill_requests.append(
+                        seq_group.metrics.first_token_time - 
+                        seq_group.metrics.first_scheduled_time
+                    )
+                    time_decode_requests.append(
+                        now - 
+                        seq_group.metrics.first_token_time
+                    )
+                    time_inference_requests.append(
+                        now - seq_group.metrics.first_scheduled_time)
+                    
+                    # Metadata.
+                    n_requests.append(seq_group.sampling_params.n)
+                    best_of_requests.append(seq_group.sampling_params.best_of)
+                    num_prompt_tokens_requests.append(
+                        seq_group.metrics.num_prompt_tokens)
+                    num_generation_tokens_requests.append(
+                        seq_group.metrics.num_generated_tokens)
+                    max_num_generation_tokens_requests.append(
+                        seq_group.metrics.max_num_generated_tokens)
+                    finished_reason_requests += CollectionsCounter([
+                        SequenceStatus.get_finished_reason(seq.status) for seq in
+                        scheduled_seq_group.seq_group.get_finished_seqs()
+                    ])
 
         return Stats(
             now=now,
-            num_running=num_running,
-            num_swapped=num_swapped,
-            num_waiting=num_waiting,
-            gpu_cache_usage=gpu_cache_usage,
-            cpu_cache_usage=cpu_cache_usage,
-            finished_reason_counter=finished_reason_counter,
-            num_prompt_tokens=num_prompt_tokens,
-            num_generation_tokens=num_generation_tokens,
-            num_prompt_tokens_lst=num_prompt_tokens_lst,
-            num_generation_tokens_lst=num_generation_tokens_lst,
-            request_n=request_n,
-            request_best_of=request_best_of,
-            time_to_first_tokens=time_to_first_tokens,
-            time_per_output_tokens=time_per_output_tokens,
+            prompt_run=num_prompt_tokens_iter > 0,
+            decode_run=(num_prompt_tokens_iter == 0 and 
+                        num_generation_tokens_iter > 0),
+
+            # System stats.
+            num_running_sys=num_running_sys,
+            num_swapped_sys=num_swapped_sys,
+            num_waiting_sys=num_waiting_sys,
+            gpu_cache_usage_sys=gpu_cache_usage_sys,
+            cpu_cache_usage_sys=cpu_cache_usage_sys,
+
+            # Iteration stats.
+            num_prompt_tokens_iter=num_prompt_tokens_iter,
+            num_generation_tokens_iter=num_prompt_tokens_iter,
+            time_to_first_tokens_iter=time_to_first_tokens_iter,
+            time_per_output_tokens_iter=time_to_first_tokens_iter,
+            
+            # Request stats.
             time_e2e_requests=time_e2e_requests,
+            time_inference_requests=time_inference_requests,
+            time_queue_requests=time_queue_requests,
+            num_prompt_tokens_requests=num_prompt_tokens_requests,
+            num_generation_tokens_requests=num_generation_tokens_requests,
+            max_num_generation_tokens_requests=
+            max_num_generation_tokens_requests,
+            n_requests=n_requests,
+            best_of_requests=best_of_requests,
+            finished_reasons_requests=finished_reason_requests
         )
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
