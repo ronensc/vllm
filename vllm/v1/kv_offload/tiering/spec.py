@@ -46,7 +46,7 @@ from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.kv_offload.abstract import OffloadingManager
 from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
-from vllm.v1.kv_offload.tiered_manager import (
+from vllm.v1.kv_offload.tiering.manager import (
     CPUPrimaryTierOffloadingManager,
     TiersOffloadingManager,
 )

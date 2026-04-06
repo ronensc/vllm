@@ -58,6 +58,6 @@ OffloadingSpecFactory.register_spec(
 )
 OffloadingSpecFactory.register_spec(
     "TiersOffloadingSpec",
-    "vllm.v1.kv_offload.tiered",
+    "vllm.v1.kv_offload.tiering.spec",
     "TiersOffloadingSpec",
 )

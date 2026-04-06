@@ -18,8 +18,10 @@ from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.kv_offload.abstract import JobMetadata
 from vllm.v1.kv_offload.mediums import CPUMemoryViewLoadStoreSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
-from vllm.v1.kv_offload.tiered import CPUPrimaryTierOffloadingManager
-from vllm.v1.kv_offload.tiered_manager import TiersOffloadingManager
+from vllm.v1.kv_offload.tiering.manager import (
+    CPUPrimaryTierOffloadingManager,
+    TiersOffloadingManager,
+)
 
 
 def make_block_hash(req_id: int, block_idx: int) -> BlockHash:

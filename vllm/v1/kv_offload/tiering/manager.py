@@ -44,7 +44,6 @@ from vllm.v1.kv_offload.mediums import (
 logger = init_logger(__name__)
 
 
-# TODO: Think of reorganizing the tiers manager feature into files/dirs
 class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
     """CPUOffloadingManager with a primary/secondary transfer interface.
 
