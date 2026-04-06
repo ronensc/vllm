@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """
-Unit tests for TiersOffloadingManager and DummySecondaryTier.
+Unit tests for TieringOffloadingManager and DummySecondaryTier.
 
 These tests verify:
 1. Basic tiered offloading operations (store, load, lookup)
@@ -20,7 +20,7 @@ from vllm.v1.kv_offload.mediums import CPUMemoryViewLoadStoreSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
 from vllm.v1.kv_offload.tiering.manager import (
     CPUPrimaryTierOffloadingManager,
-    TiersOffloadingManager,
+    TieringOffloadingManager,
 )
 
 
@@ -137,8 +137,8 @@ class TestDummySecondaryTier:
         assert tier.get_num_in_flight() == 0
 
 
-class TestTiersOffloadingManager:
-    """Tests for TiersOffloadingManager."""
+class TestTieringOffloadingManager:
+    """Tests for TieringOffloadingManager."""
 
     @pytest.fixture
     def manager_setup(self):
@@ -155,7 +155,7 @@ class TestTiersOffloadingManager:
         self.secondary_tier2 = DummySecondaryTier(tier_name="Network", max_blocks=10)
 
         # Create tiered manager
-        self.manager = TiersOffloadingManager(
+        self.manager = TieringOffloadingManager(
             primary_tier=self.primary_tier,
             secondary_tiers=[self.secondary_tier1, self.secondary_tier2],
         )
@@ -345,7 +345,7 @@ class TestTiersOffloadingManager:
         mock_cpu_tensor = torch.zeros((10, 16), dtype=torch.float32)
         primary_tier.get_primary_kv_tensors = lambda: mock_cpu_tensor
 
-        manager = TiersOffloadingManager(
+        manager = TieringOffloadingManager(
             primary_tier=primary_tier,
             secondary_tiers=[small_tier, large_tier],
         )
@@ -398,7 +398,7 @@ class TestTiersOffloadingManager:
 
 
 class TestTiersOffloadingWithoutSecondaryTiers:
-    """Test TiersOffloadingManager with no secondary tiers (backward compat)."""
+    """Test TieringOffloadingManager with no secondary tiers (backward compat)."""
 
     def test_works_without_secondary_tiers(self):
         """Test that manager works with empty secondary_tiers list."""
@@ -409,7 +409,9 @@ class TestTiersOffloadingWithoutSecondaryTiers:
         primary_tier.get_primary_kv_tensors = lambda: mock_cpu_tensor
 
         # Create manager with no secondary tiers
-        manager = TiersOffloadingManager(primary_tier=primary_tier, secondary_tiers=[])
+        manager = TieringOffloadingManager(
+            primary_tier=primary_tier, secondary_tiers=[]
+        )
 
         blocks = [make_block_hash(1, i) for i in range(3)]
 

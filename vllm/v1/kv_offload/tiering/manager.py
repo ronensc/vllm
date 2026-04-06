@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """
-TiersOffloadingManager: Multi-tier KV cache offloading orchestrator.
+TieringOffloadingManager: Multi-tier KV cache offloading orchestrator.
 
 This manager coordinates between a primary tier (with GPU access, currently
 CPU-based) and zero or more secondary tiers (Storage, Network, etc.) to
@@ -50,7 +50,7 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
     The inherited prepare_store/complete_store/prepare_load/complete_load are the
     GPU-facing OffloadingManager interface. These aliases expose the same operations
     from the secondary tier perspective, where read/write refers to secondary
-    accessing primary. This avoids confusion when reading TiersOffloadingManager
+    accessing primary. This avoids confusion when reading TieringOffloadingManager
     code (e.g. calling prepare_load inside a cascade/store path would be misleading).
     """
 
@@ -77,7 +77,7 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
         Get the primary tier's KV cache tensor.
 
         Returns the CPU tensor that stores the KV cache data.
-        TieredManager will pass a memoryview of this tensor to secondary tier
+        TieringOffloadingManager will pass a memoryview of this tensor to secondary tier
         managers for data transfer operations.
 
         TODO: This is a placeholder returning a dummy zero tensor.
@@ -95,7 +95,7 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
         return torch.zeros(1)
 
 
-class TiersOffloadingManager(OffloadingManager):
+class TieringOffloadingManager(OffloadingManager):
     """
     Orchestrates multi-tier KV cache offloading.
 
@@ -118,7 +118,7 @@ class TiersOffloadingManager(OffloadingManager):
         enable_events: bool = False,
     ):
         """
-        Initialize the tiered offloading manager.
+        Initialize the TieringOffloadingManager.
 
         Args:
             primary_tier: The primary tier manager (CPU-based).

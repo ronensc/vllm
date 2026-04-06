@@ -3,7 +3,7 @@
 """
 TiersOffloadingSpec: Spec for multi-tier KV cache offloading.
 
-This spec creates a TiersOffloadingManager with a CPU-based primary tier
+This spec creates a TieringOffloadingManager with a CPU-based primary tier
 and configurable secondary tiers (e.g., Storage, Network).
 
 Configuration via kv_connector_extra_config:
@@ -48,7 +48,7 @@ from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
 from vllm.v1.kv_offload.tiering.manager import (
     CPUPrimaryTierOffloadingManager,
-    TiersOffloadingManager,
+    TieringOffloadingManager,
 )
 
 logger = init_logger(__name__)
@@ -58,7 +58,7 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
     """
     Spec for multi-tier KV cache offloading.
 
-    Creates a TiersOffloadingManager with:
+    Creates a TieringOffloadingManager with:
     - Primary tier: CPU-based (LRU or ARC eviction policy)
     - Secondary tiers: Configurable via extra_config
 
@@ -76,7 +76,7 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
             raise ValueError("secondary_tiers must be a list of tier configurations")
 
         # Scheduler-side (narrower type than CPUOffloadingSpec._manager)
-        self._manager: TiersOffloadingManager | None = None
+        self._manager: TieringOffloadingManager | None = None
 
     def _create_secondary_tier(self, tier_config: dict):
         """
@@ -119,14 +119,14 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
 
     def get_manager(self) -> OffloadingManager:
         """
-        Get the TiersOffloadingManager.
+        Get the TieringOffloadingManager.
 
-        Creates a TiersOffloadingManager with:
+        Creates a TieringOffloadingManager with:
         - Primary tier: CPU-based (LRU or ARC)
         - Secondary tiers: As configured in extra_config
 
         Returns:
-            TiersOffloadingManager instance
+            TieringOffloadingManager instance
         """
         if not self._manager:
             kv_events_config = self.vllm_config.kv_events_config
@@ -163,22 +163,22 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
                     )
                     raise
 
-            # Create tiered manager. GPU↔CPU transfers use the inherited
+            # Create TieringOffloadingManager. GPU↔CPU transfers use the inherited
             # get_handlers(); secondary tier transfers are handled by the
             # secondary tier managers and need no additional handlers here.
-            self._manager = TiersOffloadingManager(
+            self._manager = TieringOffloadingManager(
                 primary_tier=primary_tier,
                 secondary_tiers=secondary_tiers,
                 enable_events=enable_events,
             )
-            # PRNOTE: should the store_filter apply to the TiersOffloadingManager or to
-            # the primary CPU manager?
+            # PRNOTE: should the store_filter apply to the TieringOffloadingManager or
+            # to the primary CPU manager?
             self._manager = self._maybe_apply_store_filter(  # type: ignore[assignment]
                 self._manager
             )
 
             logger.info(
-                "Created TiersOffloadingManager with primary tier "
+                "Created TieringOffloadingManager with primary tier "
                 "(%s, %s blocks) and %s secondary tier(s)",
                 self.eviction_policy,
                 self.num_blocks,
