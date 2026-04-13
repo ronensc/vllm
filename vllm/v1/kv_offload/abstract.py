@@ -305,17 +305,16 @@ class SecondaryTierManager(ABC):
         """
         pass
 
-    def set_primary_view(self, view: memoryview, block_stride_bytes: int) -> None:
+    def set_primary_view(self, view: memoryview) -> None:
         """
         Provide a long-lived memoryview of the primary-tier CPU tensor.
 
         Called once by TieringOffloadingManager during initialisation.
-        Override to store the view and stride for use in
-        `submit_store` and `submit_load`.
+        Override to store the view for use in `submit_store` and `submit_load`.
+        Use `view.strides[0]` to obtain the byte stride between block slots.
 
         Args:
             view: Memoryview of the primary tier's CPU KV cache tensor.
-            block_stride_bytes: Byte stride between consecutive block slots.
         """
         return
 

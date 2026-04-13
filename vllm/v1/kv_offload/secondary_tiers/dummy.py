@@ -78,7 +78,6 @@ class DummySecondaryTier(SecondaryTierManager):
         self.simulate_async = simulate_async
 
         self._primary_view: memoryview | None = None
-        self._block_stride_bytes: int = 0
 
         # block_hash -> True (only care about presence)
         self.blocks: OrderedDict[BlockHash, bool] = OrderedDict()
@@ -92,9 +91,8 @@ class DummySecondaryTier(SecondaryTierManager):
         # Pending jobs (for simulated async mode)
         self.pending_jobs: list[_JobMetadata] = []
 
-    def set_primary_view(self, view: memoryview, block_stride_bytes: int) -> None:
+    def set_primary_view(self, view: memoryview) -> None:
         self._primary_view = view
-        self._block_stride_bytes = block_stride_bytes
 
     def lookup(self, block_hashes: Iterable[BlockHash]) -> int | None:
         """

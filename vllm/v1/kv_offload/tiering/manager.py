@@ -137,9 +137,8 @@ class TieringOffloadingManager(OffloadingManager):
         # Wire each secondary tier with a long-lived memoryview of the primary
         # CPU tensor (one independent view per tier).
         cpu_tensor = primary_tier.get_primary_kv_tensors()
-        block_stride_bytes = cpu_tensor.stride(0) * cpu_tensor.element_size()
         for tier in self.secondary_tiers:
-            tier.set_primary_view(memoryview(cpu_tensor.numpy()), block_stride_bytes)
+            tier.set_primary_view(memoryview(cpu_tensor.numpy()))
             # TODO: release memoryviews on shutdown()
 
     def _next_job_id(self) -> JobId:

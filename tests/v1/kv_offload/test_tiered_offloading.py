@@ -80,10 +80,7 @@ class TestDummySecondaryTier:
         new_block = make_block_hash(1, 3)
 
         mock_tensor = torch.zeros((4, 16), dtype=torch.float32)
-        tier.set_primary_view(
-            memoryview(mock_tensor.numpy()),
-            mock_tensor.stride(0) * mock_tensor.element_size(),
-        )
+        tier.set_primary_view(memoryview(mock_tensor.numpy()))
 
         tier.submit_store(
             JobMetadata(
@@ -110,10 +107,7 @@ class TestDummySecondaryTier:
         blocks = [make_block_hash(1, i) for i in range(2)]
 
         mock_tensor = torch.zeros((10, 16), dtype=torch.float32)
-        tier.set_primary_view(
-            memoryview(mock_tensor.numpy()),
-            mock_tensor.stride(0) * mock_tensor.element_size(),
-        )
+        tier.set_primary_view(memoryview(mock_tensor.numpy()))
 
         # Submit store job
         tier.submit_store(
