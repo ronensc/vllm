@@ -36,10 +36,6 @@ from vllm.v1.kv_offload.abstract import (
     SecondaryTierManager,
 )
 from vllm.v1.kv_offload.cpu.manager import CPUOffloadingManager
-from vllm.v1.kv_offload.mediums import (
-    BlockIDsLoadStoreSpec,
-    CPUMemoryViewLoadStoreSpec,
-)
 
 logger = init_logger(__name__)
 
@@ -138,38 +134,19 @@ class TieringOffloadingManager(OffloadingManager):
         # Load jobs: secondary → primary transfers (promotions)
         self._load_jobs: dict[JobId, JobMetadata] = {}
 
+        # Wire each secondary tier with a long-lived memoryview of the primary
+        # CPU tensor (one independent view per tier).
+        cpu_tensor = primary_tier.get_primary_kv_tensors()
+        block_stride_bytes = cpu_tensor.stride(0) * cpu_tensor.element_size()
+        for tier in self.secondary_tiers:
+            tier.set_primary_view(memoryview(cpu_tensor.numpy()), block_stride_bytes)
+            # TODO: release memoryviews on shutdown()
+
     def _next_job_id(self) -> JobId:
         """Generate a unique job ID for async transfer tracking."""
         job_id = self._job_id_counter
         self._job_id_counter += 1
         return job_id
-
-    def _create_memory_view_spec(
-        self, cpu_blocks_spec: LoadStoreSpec, readonly: bool = False
-    ) -> LoadStoreSpec:
-        """
-        Convert CPULoadStoreSpec to CPUMemoryViewLoadStoreSpec.
-
-        Takes a spec with just block IDs and enhances it with memory views
-        for direct CPU memory access by secondary tiers.
-
-        Args:
-            cpu_blocks_spec: CPULoadStoreSpec with block IDs
-            readonly: If True, create readonly memory views (for read operations)
-
-        Returns:
-            CPUMemoryViewLoadStoreSpec with block IDs and memory views
-        """
-        # Type assertion: primary tier always returns BlockIDsLoadStoreSpec
-        assert isinstance(cpu_blocks_spec, BlockIDsLoadStoreSpec)
-
-        cpu_tensor = self.primary_tier.get_primary_kv_tensors()
-
-        return CPUMemoryViewLoadStoreSpec(
-            block_ids=cpu_blocks_spec.block_ids.tolist(),
-            cpu_tensor=cpu_tensor,
-            readonly=readonly,
-        )
 
     def _process_finished_jobs(self):
         """
@@ -191,13 +168,11 @@ class TieringOffloadingManager(OffloadingManager):
                     # primary→secondary transfer completed.
                     # Decrement ref_cnt on primary blocks.
                     job_metadata = self._store_jobs.pop(job_id)
-                    job_metadata.spec.release()
                     self.primary_tier.complete_read(job_metadata.block_hashes)
                 elif job_id in self._load_jobs:
                     # secondary→primary transfer (promotion) completed.
                     # Make blocks available in primary tier.
                     job_metadata = self._load_jobs.pop(job_id)
-                    job_metadata.spec.release()
                     self.primary_tier.complete_write(
                         job_metadata.block_hashes, completed_job.success
                     )
@@ -302,14 +277,11 @@ class TieringOffloadingManager(OffloadingManager):
         # Submit async load job: secondary→primary
         job_id = self._next_job_id()
 
-        # Convert to memory view spec for secondary tier access (writable for loading)
-        primary_write_spec = self._create_memory_view_spec(
-            primary_store_result.store_spec, readonly=False
-        )
-
         # Track this load job
         job_metadata = JobMetadata(
-            job_id=job_id, block_hashes=block_hashes, spec=primary_write_spec
+            job_id=job_id,
+            block_hashes=block_hashes,
+            spec=primary_store_result.store_spec,
         )
         self._load_jobs[job_id] = job_metadata
 
@@ -431,18 +403,12 @@ class TieringOffloadingManager(OffloadingManager):
             # Get spec for reading from primary tier AND increment ref_cnt
             primary_blocks_spec = self.primary_tier.prepare_read(block_hashes_list)
 
-            # Convert to memory view spec for secondary tier access
-            # (readonly for storing)
-            primary_read_spec = self._create_memory_view_spec(
-                primary_blocks_spec, readonly=True
-            )
-
             # Submit async store job: primary→secondary
             job_id = self._next_job_id()
 
             # Track this store job
             job_metadata = JobMetadata(
-                job_id=job_id, block_hashes=block_hashes_list, spec=primary_read_spec
+                job_id=job_id, block_hashes=block_hashes_list, spec=primary_blocks_spec
             )
             self._store_jobs[job_id] = job_metadata
 

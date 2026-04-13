@@ -73,10 +73,6 @@ class LoadStoreSpec(ABC):
         """
         pass
 
-    def release(self) -> None:  # noqa: B027
-        """Release any resources held by this spec (e.g. open buffer exports)."""
-        pass
-
 
 @dataclass
 class PrepareStoreOutput:
@@ -308,6 +304,20 @@ class SecondaryTierManager(ABC):
             finished since the last call.
         """
         pass
+
+    def set_primary_view(self, view: memoryview, block_stride_bytes: int) -> None:
+        """
+        Provide a long-lived memoryview of the primary-tier CPU tensor.
+
+        Called once by TieringOffloadingManager during initialisation.
+        Override to store the view and stride for use in
+        `submit_store` and `submit_load`.
+
+        Args:
+            view: Memoryview of the primary tier's CPU KV cache tensor.
+            block_stride_bytes: Byte stride between consecutive block slots.
+        """
+        return
 
     def touch(self, block_hashes: Iterable[BlockHash]):
         """

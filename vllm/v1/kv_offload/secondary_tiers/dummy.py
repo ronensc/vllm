@@ -21,7 +21,7 @@ from vllm.v1.kv_offload.abstract import (
     LoadStoreSpec,
     SecondaryTierManager,
 )
-from vllm.v1.kv_offload.mediums import CPUMemoryViewLoadStoreSpec
+from vllm.v1.kv_offload.mediums import CPULoadStoreSpec
 
 
 @dataclass
@@ -77,6 +77,9 @@ class DummySecondaryTier(SecondaryTierManager):
         self.max_blocks = max_blocks
         self.simulate_async = simulate_async
 
+        self._primary_view: memoryview | None = None
+        self._block_stride_bytes: int = 0
+
         # block_hash -> True (only care about presence)
         self.blocks: OrderedDict[BlockHash, bool] = OrderedDict()
 
@@ -88,6 +91,10 @@ class DummySecondaryTier(SecondaryTierManager):
 
         # Pending jobs (for simulated async mode)
         self.pending_jobs: list[_JobMetadata] = []
+
+    def set_primary_view(self, view: memoryview, block_stride_bytes: int) -> None:
+        self._primary_view = view
+        self._block_stride_bytes = block_stride_bytes
 
     def lookup(self, block_hashes: Iterable[BlockHash]) -> int | None:
         """
@@ -128,8 +135,8 @@ class DummySecondaryTier(SecondaryTierManager):
         primary_read_spec = job_metadata.spec
 
         # Validate spec type and consistency
-        assert isinstance(primary_read_spec, CPUMemoryViewLoadStoreSpec), (
-            f"Expected CPUMemoryViewLoadStoreSpec, got {type(primary_read_spec)}"
+        assert isinstance(primary_read_spec, CPULoadStoreSpec), (
+            f"Expected CPULoadStoreSpec, got {type(primary_read_spec)}"
         )
         assert len(block_hashes_list) == len(primary_read_spec.block_ids), (
             f"Length mismatch: {len(block_hashes_list)} block_hashes but "
@@ -192,8 +199,8 @@ class DummySecondaryTier(SecondaryTierManager):
         primary_write_spec = job_metadata.spec
 
         # Validate spec type and consistency
-        assert isinstance(primary_write_spec, CPUMemoryViewLoadStoreSpec), (
-            f"Expected CPUMemoryViewLoadStoreSpec, got {type(primary_write_spec)}"
+        assert isinstance(primary_write_spec, CPULoadStoreSpec), (
+            f"Expected CPULoadStoreSpec, got {type(primary_write_spec)}"
         )
         assert len(block_hashes_list) == len(primary_write_spec.block_ids), (
             f"Length mismatch: {len(block_hashes_list)} block_hashes but "

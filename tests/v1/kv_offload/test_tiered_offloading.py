@@ -16,7 +16,7 @@ import torch
 
 from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.kv_offload.abstract import JobMetadata
-from vllm.v1.kv_offload.mediums import CPUMemoryViewLoadStoreSpec
+from vllm.v1.kv_offload.mediums import CPULoadStoreSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
 from vllm.v1.kv_offload.tiering.manager import (
     CPUPrimaryTierOffloadingManager,
@@ -79,16 +79,17 @@ class TestDummySecondaryTier:
         # Store new block should evict blocks[1] (least recently used)
         new_block = make_block_hash(1, 3)
 
-        # Create a mock CPU tensor for testing
-        mock_tensor = torch.zeros(
-            (4, 16), dtype=torch.float32
-        )  # 4 blocks, 16 bytes each
+        mock_tensor = torch.zeros((4, 16), dtype=torch.float32)
+        tier.set_primary_view(
+            memoryview(mock_tensor.numpy()),
+            mock_tensor.stride(0) * mock_tensor.element_size(),
+        )
 
         tier.submit_store(
             JobMetadata(
                 job_id=1,
                 block_hashes=[new_block],
-                spec=CPUMemoryViewLoadStoreSpec([0], mock_tensor),
+                spec=CPULoadStoreSpec([0]),
             )
         )
 
@@ -108,17 +109,18 @@ class TestDummySecondaryTier:
 
         blocks = [make_block_hash(1, i) for i in range(2)]
 
-        # Create a mock CPU tensor for testing
-        mock_tensor = torch.zeros(
-            (10, 16), dtype=torch.float32
-        )  # 10 blocks, 16 bytes each
+        mock_tensor = torch.zeros((10, 16), dtype=torch.float32)
+        tier.set_primary_view(
+            memoryview(mock_tensor.numpy()),
+            mock_tensor.stride(0) * mock_tensor.element_size(),
+        )
 
         # Submit store job
         tier.submit_store(
             JobMetadata(
                 job_id=1,
                 block_hashes=blocks,
-                spec=CPUMemoryViewLoadStoreSpec([0, 1], mock_tensor),
+                spec=CPULoadStoreSpec([0, 1]),
             )
         )
 

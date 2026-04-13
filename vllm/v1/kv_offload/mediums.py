@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-import ctypes
 from abc import ABC
 from collections.abc import Sequence
 
 import numpy as np
-import torch
 
 from vllm.v1.kv_offload.abstract import LoadStoreSpec
 
@@ -70,34 +68,3 @@ class CPULoadStoreSpec(BlockIDsLoadStoreSpec):
     @staticmethod
     def medium() -> str:
         return "CPU"
-
-
-class CPUMemoryViewLoadStoreSpec(CPULoadStoreSpec):
-    """
-    Extended CPU spec with direct memory view access for secondary tiers.
-
-    Provides zero-copy access to CPU tensor memory. Contains memory views
-    of entire tensors plus block IDs for offset calculation.
-
-    Attributes:
-        block_ids: IDs of blocks to transfer (inherited from BlockIDsLoadStoreSpec)
-        tensor_view: Memory view of the CPU KV cache tensor
-        block_stride_bytes: Byte stride between consecutive blocks
-    """
-
-    def __init__(
-        self,
-        block_ids: list[int],
-        cpu_tensor: torch.Tensor,
-        readonly: bool = False,
-    ):
-        super().__init__(block_ids)
-        view = memoryview(cpu_tensor.numpy())
-        assert (
-            ctypes.addressof(ctypes.c_byte.from_buffer(view)) == cpu_tensor.data_ptr()
-        ), "memoryview is not zero-copy: view does not point to tensor storage"
-        self.tensor_view = view.toreadonly() if readonly else view
-        self.block_stride_bytes = cpu_tensor.stride(0) * cpu_tensor.element_size()
-
-    def release(self) -> None:
-        self.tensor_view.release()
