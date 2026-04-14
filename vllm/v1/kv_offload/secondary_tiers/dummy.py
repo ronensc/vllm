@@ -13,12 +13,12 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.kv_offload.abstract import (
     JobId,
     JobMetadata,
     JobResult,
     LoadStoreSpec,
+    OffloadKey,
     SecondaryTierManager,
 )
 from vllm.v1.kv_offload.mediums import CPULoadStoreSpec
@@ -29,7 +29,7 @@ class _JobMetadata:
     """Internal metadata for tracking job details."""
 
     job_id: JobId
-    block_hashes: list[BlockHash]
+    keys: list[OffloadKey]
     is_store: bool  # True for store jobs, False for load jobs
 
 
@@ -52,7 +52,7 @@ class DummySecondaryTier(SecondaryTierManager):
     A simple in-memory secondary tier for testing.
 
     This implementation:
-    - Stores blocks in a dictionary (block_hash -> True)
+    - Stores blocks in a dictionary (key -> True)
     - Simulates async transfers with immediate completion
     - Uses LRU eviction policy
     - Tracks in-flight transfers to return None from lookup()
@@ -79,11 +79,11 @@ class DummySecondaryTier(SecondaryTierManager):
 
         self._primary_view: memoryview | None = None
 
-        # block_hash -> True (only care about presence)
-        self.blocks: OrderedDict[BlockHash, bool] = OrderedDict()
+        # key -> True (only care about presence)
+        self.blocks: OrderedDict[OffloadKey, bool] = OrderedDict()
 
-        # Tracks in-flight transfers: block_hash -> job_id
-        self.in_flight: dict[BlockHash, JobId] = {}
+        # Tracks in-flight transfers: key -> job_id
+        self.in_flight: dict[OffloadKey, JobId] = {}
 
         # Completed jobs waiting to be retrieved by get_finished()
         self.completed_jobs: list[JobResult] = []
@@ -94,26 +94,26 @@ class DummySecondaryTier(SecondaryTierManager):
     def set_primary_view(self, view: memoryview) -> None:
         self._primary_view = view
 
-    def lookup(self, block_hashes: Iterable[BlockHash]) -> int | None:
+    def lookup(self, keys: Iterable[OffloadKey]) -> int | None:
         """
         Check which blocks exist in this secondary tier.
 
         Args:
-            block_hashes: Block hashes to look up.
+            keys: Block hashes to look up.
 
         Returns:
             Number of consecutive blocks (from start) that are present and ready,
             or None if blocks are being transferred (retry later).
         """
         hit_count = 0
-        for block_hash in block_hashes:
+        for key in keys:
             # Check if block is in-flight
-            if block_hash in self.in_flight:
+            if key in self.in_flight:
                 # Block is being transferred, return None (retry later)
                 return None
 
             # Check if block exists in this tier
-            if block_hash not in self.blocks:
+            if key not in self.blocks:
                 break
 
             hit_count += 1
@@ -125,24 +125,24 @@ class DummySecondaryTier(SecondaryTierManager):
         Submit an async job to store blocks from primary tier to this tier.
 
         Args:
-            job_metadata: Job metadata including job_id, block_hashes, and
+            job_metadata: Job metadata including job_id, keys, and
                           spec for reading blocks from the primary tier.
         """
         job_id = job_metadata.job_id
-        block_hashes_list = list(job_metadata.block_hashes)
+        keys_list = list(job_metadata.keys)
         primary_read_spec = job_metadata.spec
 
         # Validate spec type and consistency
         assert isinstance(primary_read_spec, CPULoadStoreSpec), (
             f"Expected CPULoadStoreSpec, got {type(primary_read_spec)}"
         )
-        assert len(block_hashes_list) == len(primary_read_spec.block_ids), (
-            f"Length mismatch: {len(block_hashes_list)} block_hashes but "
+        assert len(keys_list) == len(primary_read_spec.block_ids), (
+            f"Length mismatch: {len(keys_list)} keys but "
             f"{len(primary_read_spec.block_ids)} block_ids in spec"
         )
 
         # Filter out blocks already present
-        blocks_to_store = [bh for bh in block_hashes_list if bh not in self.blocks]
+        blocks_to_store = [bh for bh in keys_list if bh not in self.blocks]
 
         if not blocks_to_store:
             # All blocks already present
@@ -156,25 +156,25 @@ class DummySecondaryTier(SecondaryTierManager):
         evicted = []
         if num_blocks_to_evict > 0:
             # Collect eviction candidates first (LRU order), then delete atomically
-            protected = set(block_hashes_list)
-            for block_hash in self.blocks:
-                if block_hash not in protected and block_hash not in self.in_flight:
-                    evicted.append(block_hash)
+            protected = set(keys_list)
+            for key in self.blocks:
+                if key not in protected and key not in self.in_flight:
+                    evicted.append(key)
                     if len(evicted) == num_blocks_to_evict:
                         break
             else:
                 # Could not collect enough eviction candidates
                 return
-            for block_hash in evicted:
-                del self.blocks[block_hash]
+            for key in evicted:
+                del self.blocks[key]
 
         # Mark blocks as in-flight
-        for block_hash in blocks_to_store:
-            self.in_flight[block_hash] = job_id
+        for key in blocks_to_store:
+            self.in_flight[key] = job_id
 
         # Create internal job metadata
         internal_job_metadata = _JobMetadata(
-            job_id=job_id, block_hashes=blocks_to_store, is_store=True
+            job_id=job_id, keys=blocks_to_store, is_store=True
         )
 
         if self.simulate_async:
@@ -189,34 +189,34 @@ class DummySecondaryTier(SecondaryTierManager):
         Submit an async job to load blocks from this tier to primary tier.
 
         Args:
-            job_metadata: Job metadata including job_id, block_hashes, and
+            job_metadata: Job metadata including job_id, keys, and
                           spec for writing blocks into the primary tier.
         """
         job_id = job_metadata.job_id
-        block_hashes_list = list(job_metadata.block_hashes)
+        keys_list = list(job_metadata.keys)
         primary_write_spec = job_metadata.spec
 
         # Validate spec type and consistency
         assert isinstance(primary_write_spec, CPULoadStoreSpec), (
             f"Expected CPULoadStoreSpec, got {type(primary_write_spec)}"
         )
-        assert len(block_hashes_list) == len(primary_write_spec.block_ids), (
-            f"Length mismatch: {len(block_hashes_list)} block_hashes but "
+        assert len(keys_list) == len(primary_write_spec.block_ids), (
+            f"Length mismatch: {len(keys_list)} keys but "
             f"{len(primary_write_spec.block_ids)} block_ids in spec"
         )
 
         # Verify all blocks exist
-        for block_hash in block_hashes_list:
-            if block_hash not in self.blocks:
+        for key in keys_list:
+            if key not in self.blocks:
                 return
 
         # Mark blocks as in-flight
-        for block_hash in block_hashes_list:
-            self.in_flight[block_hash] = job_id
+        for key in keys_list:
+            self.in_flight[key] = job_id
 
         # Create internal job metadata
         internal_job_metadata = _JobMetadata(
-            job_id=job_id, block_hashes=block_hashes_list, is_store=False
+            job_id=job_id, keys=keys_list, is_store=False
         )
 
         if self.simulate_async:
@@ -250,29 +250,29 @@ class DummySecondaryTier(SecondaryTierManager):
 
     def _complete_store_job(self, job_metadata: _JobMetadata):
         """Complete a store job by adding blocks to storage."""
-        for block_hash in job_metadata.block_hashes:
-            self.blocks[block_hash] = True
-            del self.in_flight[block_hash]
+        for key in job_metadata.keys:
+            self.blocks[key] = True
+            del self.in_flight[key]
         # Return simplified JobResult (only job_id and success)
         self.completed_jobs.append(JobResult(job_id=job_metadata.job_id, success=True))
 
     def _complete_load_job(self, job_metadata: _JobMetadata):
         """Complete a load job by removing in-flight markers."""
-        for block_hash in job_metadata.block_hashes:
-            del self.in_flight[block_hash]
+        for key in job_metadata.keys:
+            del self.in_flight[key]
         # Return simplified JobResult (only job_id and success)
         self.completed_jobs.append(JobResult(job_id=job_metadata.job_id, success=True))
 
-    def touch(self, block_hashes: Iterable[BlockHash]):
+    def touch(self, keys: Iterable[OffloadKey]):
         """
         Mark blocks as recently used (move to end of LRU list).
 
         Args:
-            block_hashes: Blocks to mark as recently used.
+            keys: Blocks to mark as recently used.
         """
-        for block_hash in reversed(list(block_hashes)):
-            if block_hash in self.blocks:
-                self.blocks.move_to_end(block_hash)
+        for key in reversed(list(keys)):
+            if key in self.blocks:
+                self.blocks.move_to_end(key)
 
     def get_tier_name(self) -> str:
         """

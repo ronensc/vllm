@@ -32,8 +32,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import NewType
 
-from vllm.v1.core.kv_cache_utils import BlockHash
-
 # `OffloadKey` identifies an offloaded block. It combines a block hash with
 # its KV cache group index, encoded as raw bytes to avoid tuple GC overhead.
 # Use the helper functions below to construct / decompose keys.
@@ -53,6 +51,7 @@ def get_offload_block_hash(key: OffloadKey) -> bytes:
 def get_offload_group_idx(key: OffloadKey) -> int:
     """Extract the group index from an `OffloadKey`."""
     return int.from_bytes(key[-4:], "big", signed=False)
+
 
 # Type alias for job IDs used in async transfer tracking
 JobId = int
@@ -95,7 +94,7 @@ class JobMetadata:
     """Metadata for an in-flight async transfer job."""
 
     job_id: JobId
-    block_hashes: list[BlockHash]
+    keys: list[OffloadKey]
     spec: LoadStoreSpec
 
 
@@ -221,12 +220,12 @@ class SecondaryTierManager(ABC):
     """
 
     @abstractmethod
-    def lookup(self, block_hashes: Iterable[BlockHash]) -> int | None:
+    def lookup(self, keys: Iterable[OffloadKey]) -> int | None:
         """
         Check which blocks exist in this secondary tier.
 
         Args:
-            block_hashes: Block hashes to look up.
+            keys: Offload keys to look up.
 
         Returns:
             Number of consecutive blocks (from start) that are present and ready,
@@ -318,12 +317,12 @@ class SecondaryTierManager(ABC):
         """
         return
 
-    def touch(self, block_hashes: Iterable[BlockHash]):
+    def touch(self, keys: Iterable[OffloadKey]):
         """
         Mark blocks as recently used for eviction policy.
 
         Args:
-            block_hashes: Blocks to mark as recently used.
+            keys: Offload keys to mark as recently used.
         """
         return
 

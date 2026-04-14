@@ -25,13 +25,13 @@ from collections.abc import Iterable
 import torch
 
 from vllm.logger import init_logger
-from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.kv_offload.abstract import (
     JobId,
     JobMetadata,
     LoadStoreSpec,
     OffloadingEvent,
     OffloadingManager,
+    OffloadKey,
     PrepareStoreOutput,
     SecondaryTierManager,
 )
@@ -50,23 +50,23 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
     code (e.g. calling prepare_load inside a cascade/store path would be misleading).
     """
 
-    def prepare_write(self, block_hashes) -> PrepareStoreOutput | None:
+    def prepare_write(self, keys) -> PrepareStoreOutput | None:
         """Allocate space in primary for a secondary->primary write (promotion)."""
-        return self.prepare_store(block_hashes)
+        return self.prepare_store(keys)
 
-    def complete_write(self, block_hashes, success: bool = True) -> None:
+    def complete_write(self, keys, success: bool = True) -> None:
         """Finalize secondary->primary write, making blocks available."""
-        self.complete_store(block_hashes, success)
+        self.complete_store(keys, success)
 
-    def prepare_read(self, block_hashes) -> LoadStoreSpec:
+    def prepare_read(self, keys) -> LoadStoreSpec:
         """Protect primary blocks for a primary->secondary read (cascade),
         incrementing ref_cnt."""
-        return self.prepare_load(block_hashes)
+        return self.prepare_load(keys)
 
-    def complete_read(self, block_hashes) -> None:
+    def complete_read(self, keys) -> None:
         """Release protection after primary->secondary read completes,
         decrementing ref_cnt."""
-        self.complete_load(block_hashes)
+        self.complete_load(keys)
 
     def get_primary_kv_tensors(self) -> torch.Tensor:
         """
@@ -167,13 +167,13 @@ class TieringOffloadingManager(OffloadingManager):
                     # primary→secondary transfer completed.
                     # Decrement ref_cnt on primary blocks.
                     job_metadata = self._store_jobs.pop(job_id)
-                    self.primary_tier.complete_read(job_metadata.block_hashes)
+                    self.primary_tier.complete_read(job_metadata.keys)
                 elif job_id in self._load_jobs:
                     # secondary→primary transfer (promotion) completed.
                     # Make blocks available in primary tier.
                     job_metadata = self._load_jobs.pop(job_id)
                     self.primary_tier.complete_write(
-                        job_metadata.block_hashes, completed_job.success
+                        job_metadata.keys, completed_job.success
                     )
                 else:
                     # Job ID not found in either dictionary - this shouldn't happen
@@ -183,7 +183,7 @@ class TieringOffloadingManager(OffloadingManager):
                         tier.get_tier_name(),
                     )
 
-    def lookup(self, block_hashes: Iterable[BlockHash]) -> int | None:
+    def lookup(self, keys: Iterable[OffloadKey]) -> int | None:
         """
         Find the length of the maximal series of blocks that are offloaded.
 
@@ -195,7 +195,7 @@ class TieringOffloadingManager(OffloadingManager):
         3. Return None to signal "retry later" if any promotions were initiated
 
         Args:
-            block_hashes: Block hashes to look up.
+            keys: Block hashes to look up.
 
         Returns:
             Number of consecutive blocks (from start) that are present,
@@ -205,43 +205,43 @@ class TieringOffloadingManager(OffloadingManager):
         # are finalized and available in the primary tier
         self._process_finished_jobs()
 
-        block_hashes_list = list(block_hashes)
+        keys_list = list(keys)
 
         # Step 1: Check primary tier
-        primary_hits = self.primary_tier.lookup(block_hashes_list)
+        primary_hits = self.primary_tier.lookup(keys_list)
 
         if primary_hits is None:
             # Primary tier is busy (blocks being transferred)
             return None
 
-        if primary_hits == len(block_hashes_list):
+        if primary_hits == len(keys_list):
             # All blocks in primary tier
             return primary_hits
 
         # Step 2: Check all secondary tiers for remaining blocks
-        remaining_blocks = block_hashes_list[primary_hits:]
+        remaining_keys = keys_list[primary_hits:]
 
         # Track whether any promotions were initiated
         has_promotions = False
 
         for tier in self.secondary_tiers:
-            if not remaining_blocks:
+            if not remaining_keys:
                 # All blocks have been found
                 break
 
-            secondary_hits = tier.lookup(remaining_blocks)
+            secondary_hits = tier.lookup(remaining_keys)
 
             # Skip if tier is busy (None) or has no hits (0)
             if not secondary_hits:
                 continue
 
             # Found blocks in this secondary tier, initiate promotion
-            blocks_to_promote = remaining_blocks[:secondary_hits]
+            blocks_to_promote = remaining_keys[:secondary_hits]
             self._initiate_promotion(tier, blocks_to_promote)
             has_promotions = True
 
-            # Update remaining_blocks to continue searching for the rest
-            remaining_blocks = remaining_blocks[secondary_hits:]
+            # Update remaining_keys to continue searching for the rest
+            remaining_keys = remaining_keys[secondary_hits:]
 
         # Step 3: If any promotions were initiated, return None to signal retry
         if has_promotions:
@@ -250,9 +250,7 @@ class TieringOffloadingManager(OffloadingManager):
         # No more blocks found in any tier
         return primary_hits
 
-    def _initiate_promotion(
-        self, tier: SecondaryTierManager, block_hashes: list[BlockHash]
-    ):
+    def _initiate_promotion(self, tier: SecondaryTierManager, keys: list[OffloadKey]):
         """
         Initiate promotion of blocks from a secondary tier to the primary tier.
 
@@ -263,10 +261,10 @@ class TieringOffloadingManager(OffloadingManager):
 
         Args:
             tier: The secondary tier to promote from
-            block_hashes: Blocks to promote
+            keys: Blocks to promote
         """
         # Allocate space in primary tier for promoted blocks
-        primary_store_result = self.primary_tier.prepare_write(block_hashes)
+        primary_store_result = self.primary_tier.prepare_write(keys)
 
         if primary_store_result is None:
             # Cannot allocate space in primary tier (full)
@@ -279,14 +277,14 @@ class TieringOffloadingManager(OffloadingManager):
         # Track this load job
         job_metadata = JobMetadata(
             job_id=job_id,
-            block_hashes=block_hashes,
+            keys=keys,
             spec=primary_store_result.store_spec,
         )
         self._load_jobs[job_id] = job_metadata
 
         tier.submit_load(job_metadata)
 
-    def prepare_load(self, block_hashes: Iterable[BlockHash]) -> LoadStoreSpec:
+    def prepare_load(self, keys: Iterable[OffloadKey]) -> LoadStoreSpec:
         """
         Prepare blocks to be loaded from primary tier to GPU.
 
@@ -297,7 +295,7 @@ class TieringOffloadingManager(OffloadingManager):
         them from eviction during the transfer.
 
         Args:
-            block_hashes: Blocks to prepare for loading.
+            keys: Blocks to prepare for loading.
 
         Returns:
             LoadStoreSpec for reading from primary tier.
@@ -305,21 +303,21 @@ class TieringOffloadingManager(OffloadingManager):
         # Process completed promotions to ensure blocks are ready
         self._process_finished_jobs()
 
-        return self.primary_tier.prepare_load(block_hashes)
+        return self.primary_tier.prepare_load(keys)
 
-    def touch(self, block_hashes: Iterable[BlockHash]):
+    def touch(self, keys: Iterable[OffloadKey]):
         """
         Mark blocks as recently used in all tiers.
 
         Args:
-            block_hashes: Blocks to mark as recently used.
+            keys: Blocks to mark as recently used.
         """
-        block_hashes = list(block_hashes)
-        self.primary_tier.touch(block_hashes)
+        keys = list(keys)
+        self.primary_tier.touch(keys)
         for tier in self.secondary_tiers:
-            tier.touch(block_hashes)
+            tier.touch(keys)
 
-    def complete_load(self, block_hashes: Iterable[BlockHash]):
+    def complete_load(self, keys: Iterable[OffloadKey]):
         """
         Mark blocks as done loading from primary tier to GPU.
 
@@ -327,13 +325,11 @@ class TieringOffloadingManager(OffloadingManager):
         them to be evicted again.
 
         Args:
-            block_hashes: Blocks that finished loading.
+            keys: Blocks that finished loading.
         """
-        self.primary_tier.complete_load(block_hashes)
+        self.primary_tier.complete_load(keys)
 
-    def prepare_store(
-        self, block_hashes: Iterable[BlockHash]
-    ) -> PrepareStoreOutput | None:
+    def prepare_store(self, keys: Iterable[OffloadKey]) -> PrepareStoreOutput | None:
         """
         Prepare blocks to be stored from GPU to primary tier.
 
@@ -342,7 +338,7 @@ class TieringOffloadingManager(OffloadingManager):
         before the primary tier makes eviction decisions.
 
         Args:
-            block_hashes: Blocks to prepare for storing.
+            keys: Blocks to prepare for storing.
 
         Returns:
             PrepareStoreOutput describing where to store blocks and what was
@@ -354,14 +350,14 @@ class TieringOffloadingManager(OffloadingManager):
         self._process_finished_jobs()
 
         # Step 2: Store to primary tier
-        primary_result = self.primary_tier.prepare_store(block_hashes)
+        primary_result = self.primary_tier.prepare_store(keys)
 
         # Note: Secondary tier cascading will happen in complete_store()
         # after the GPU→Primary transfer completes and blocks are ready.
 
         return primary_result
 
-    def complete_store(self, block_hashes: Iterable[BlockHash], success: bool = True):
+    def complete_store(self, keys: Iterable[OffloadKey], success: bool = True):
         """
         Mark blocks as done storing from GPU to primary tier.
 
@@ -376,22 +372,22 @@ class TieringOffloadingManager(OffloadingManager):
         3. Track the job in _store_jobs dictionary
 
         Args:
-            block_hashes: Blocks that finished storing.
+            keys: Blocks that finished storing.
             success: Whether the GPU→primary transfer succeeded.
         """
         # Materialize only if success=True (needed for cascading to secondary tiers)
-        block_hashes_list = list(block_hashes) if success else block_hashes
+        keys_list = list(keys) if success else keys
 
         # Step 1: Complete store in primary tier (makes blocks loadable)
-        self.primary_tier.complete_store(block_hashes_list, success)
+        self.primary_tier.complete_store(keys_list, success)
 
         if not success:
             # If GPU→Primary transfer failed, don't cascade to secondary tiers
             return
 
-        # At this point, success=True is guaranteed, so block_hashes_list
-        # is list[BlockHash]
-        assert isinstance(block_hashes_list, list)
+        # At this point, success=True is guaranteed, so keys_list
+        # is list[OffloadKey]
+        assert isinstance(keys_list, list)
 
         # Step 2: Cascade to ALL secondary tiers
         # For each secondary tier, call primary.prepare_read() to get the
@@ -400,14 +396,14 @@ class TieringOffloadingManager(OffloadingManager):
         # secondary tier.
         for tier in self.secondary_tiers:
             # Get spec for reading from primary tier AND increment ref_cnt
-            primary_blocks_spec = self.primary_tier.prepare_read(block_hashes_list)
+            primary_blocks_spec = self.primary_tier.prepare_read(keys_list)
 
             # Submit async store job: primary→secondary
             job_id = self._next_job_id()
 
             # Track this store job
             job_metadata = JobMetadata(
-                job_id=job_id, block_hashes=block_hashes_list, spec=primary_blocks_spec
+                job_id=job_id, keys=keys_list, spec=primary_blocks_spec
             )
             self._store_jobs[job_id] = job_metadata
 

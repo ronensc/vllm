@@ -85,7 +85,7 @@ class TestDummySecondaryTier:
         tier.submit_store(
             JobMetadata(
                 job_id=1,
-                block_hashes=[new_block],
+                keys=[new_block],
                 spec=CPULoadStoreSpec([0]),
             )
         )
@@ -113,7 +113,7 @@ class TestDummySecondaryTier:
         tier.submit_store(
             JobMetadata(
                 job_id=1,
-                block_hashes=blocks,
+                keys=blocks,
                 spec=CPULoadStoreSpec([0, 1]),
             )
         )
@@ -163,7 +163,7 @@ class TestTieringOffloadingManager:
         # Prepare store
         result = self.manager.prepare_store(blocks)
         assert result is not None
-        assert len(result.block_hashes_to_store) == 3
+        assert len(result.keys_to_store) == 3
 
         # Complete store
         self.manager.complete_store(blocks, success=True)
@@ -267,7 +267,7 @@ class TestTieringOffloadingManager:
         blocks = [make_block_hash(1, i) for i in range(5)]
         result = self.manager.prepare_store(blocks)
         assert result is not None
-        assert len(result.block_hashes_to_store) == 5
+        assert len(result.keys_to_store) == 5
         self.manager.complete_store(blocks, success=True)
 
         # Process finished jobs to release ref_cnt from cascade
@@ -279,8 +279,8 @@ class TestTieringOffloadingManager:
 
         # Should evict 2 blocks from primary tier
         assert result is not None
-        assert len(result.block_hashes_evicted) == 2
-        assert len(result.block_hashes_to_store) == 2
+        assert len(result.evicted_keys) == 2
+        assert len(result.keys_to_store) == 2
 
     def test_touch_propagates_to_all_tiers(self, manager_setup):
         """Test that touch() propagates to all tiers."""
