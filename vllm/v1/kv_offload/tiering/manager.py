@@ -135,11 +135,14 @@ class TieringOffloadingManager(OffloadingManager):
         self._load_jobs: dict[JobId, JobMetadata] = {}
 
         # Wire each secondary tier with a long-lived memoryview of the primary
-        # CPU tensor (one independent view per tier).
+        # CPU tensor (one independent view per tier). Views are stored so they
+        # can be released on shutdown().
+        self._secondary_views: list[memoryview] = []
         cpu_tensor = primary_tier.get_primary_kv_tensors()
         for tier in self.secondary_tiers:
-            tier.set_primary_view(memoryview(cpu_tensor.numpy()))
-            # TODO: release memoryviews on shutdown()
+            view = memoryview(cpu_tensor.numpy())
+            self._secondary_views.append(view)
+            tier.set_primary_view(view)
 
     def _next_job_id(self) -> JobId:
         """Generate a unique job ID for async transfer tracking."""
@@ -428,3 +431,8 @@ class TieringOffloadingManager(OffloadingManager):
 
         # Also yield events from primary tier
         yield from self.primary_tier.take_events()
+
+    def shutdown(self) -> None:
+        """Release memoryviews created during initialisation."""
+        for view in self._secondary_views:
+            view.release()
