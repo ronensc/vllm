@@ -85,8 +85,7 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
         decrementing ref_cnt."""
         self.complete_load(keys)
 
-    # TODO: rename to get_primary_kv_tensor
-    def get_primary_kv_tensors(self) -> torch.Tensor:
+    def get_primary_kv_tensor(self) -> torch.Tensor:
         """
         Get the primary tier's KV cache tensor.
 
@@ -153,7 +152,7 @@ class TieringOffloadingManager(OffloadingManager):
         # (= cpu_page_size * world_size) as the per-block byte stride in the
         # memoryview, not cpu_page_size alone. For world_size=1 both are equal.
         self._secondary_views: list[memoryview] = []
-        cpu_tensor = primary_tier.get_primary_kv_tensors()
+        cpu_tensor = primary_tier.get_primary_kv_tensor()
         for tier in self.secondary_tiers:
             view = memoryview(cpu_tensor.numpy())
             self._secondary_views.append(view)
