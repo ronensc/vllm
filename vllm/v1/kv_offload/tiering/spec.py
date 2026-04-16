@@ -40,18 +40,14 @@ Example configuration:
 }
 """
 
-from collections.abc import Iterator
-
 import torch
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
-from vllm.platforms import current_platform
 from vllm.v1.kv_cache_interface import KVCacheConfig
-from vllm.v1.kv_offload.abstract import LoadStoreSpec, OffloadingManager
+from vllm.v1.kv_offload.abstract import OffloadingManager
 from vllm.v1.kv_offload.cpu.shared_offload_region import SharedOffloadRegion
 from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
-from vllm.v1.kv_offload.mediums import CPULoadStoreSpec, GPULoadStoreSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
 from vllm.v1.kv_offload.spec import CanonicalKVCaches
 from vllm.v1.kv_offload.tiering.manager import (
@@ -59,7 +55,6 @@ from vllm.v1.kv_offload.tiering.manager import (
     TieringOffloadingManager,
 )
 from vllm.v1.kv_offload.worker.cpu_gpu import CpuGpuOffloadingHandlers
-from vllm.v1.kv_offload.worker.worker import OffloadingHandler
 
 logger = init_logger(__name__)
 
@@ -217,35 +212,24 @@ class TieringOffloadingSpec(CPUOffloadingSpec):
 
         return self._manager
 
-    def get_handlers(
+    def _create_handlers(
         self, kv_caches: CanonicalKVCaches
-    ) -> Iterator[tuple[type[LoadStoreSpec], type[LoadStoreSpec], OffloadingHandler]]:
-        if not self._handlers:
-            if not current_platform.is_cuda_alike():
-                raise Exception(
-                    "CPU Offloading is currently only supported on CUDA-alike GPUs"
-                )
-
-            world_size = self.vllm_config.parallel_config.world_size
-            rank = torch.accelerator.current_device_index()
-            worker_mmap = SharedOffloadRegion(
-                instance_id=self.vllm_config.instance_id,
-                total_size_bytes=self.cpu_page_size_per_worker
-                * world_size
-                * self.num_blocks,
-                num_blocks=self.num_blocks,
-                rank=rank,
-                num_workers=world_size,
-                cpu_page_size=self.cpu_page_size_per_worker,
-            )
-
-            self._handlers = CpuGpuOffloadingHandlers(
-                kv_caches=kv_caches,
-                block_size_factor=self.block_size_factor,
-                num_cpu_blocks=self.num_blocks,
-                mmap_region=worker_mmap,
-            )
-
-        assert self._handlers is not None
-        yield GPULoadStoreSpec, CPULoadStoreSpec, self._handlers.gpu_to_cpu_handler
-        yield CPULoadStoreSpec, GPULoadStoreSpec, self._handlers.cpu_to_gpu_handler
+    ) -> CpuGpuOffloadingHandlers:
+        world_size = self.vllm_config.parallel_config.world_size
+        rank = torch.accelerator.current_device_index()
+        worker_mmap = SharedOffloadRegion(
+            instance_id=self.vllm_config.instance_id,
+            total_size_bytes=self.cpu_page_size_per_worker
+            * world_size
+            * self.num_blocks,
+            num_blocks=self.num_blocks,
+            rank=rank,
+            num_workers=world_size,
+            cpu_page_size=self.cpu_page_size_per_worker,
+        )
+        return CpuGpuOffloadingHandlers(
+            kv_caches=kv_caches,
+            block_size_factor=self.block_size_factor,
+            num_cpu_blocks=self.num_blocks,
+            mmap_region=worker_mmap,
+        )

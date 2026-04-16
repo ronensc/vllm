@@ -93,6 +93,15 @@ class CPUOffloadingSpec(OffloadingSpec):
             self._manager = self._maybe_apply_store_filter(self._manager)
         return self._manager
 
+    def _create_handlers(
+        self, kv_caches: CanonicalKVCaches
+    ) -> CpuGpuOffloadingHandlers:
+        return CpuGpuOffloadingHandlers(
+            kv_caches=kv_caches,
+            block_size_factor=self.block_size_factor,
+            num_cpu_blocks=self.num_blocks,
+        )
+
     def get_handlers(
         self, kv_caches: CanonicalKVCaches
     ) -> Iterator[tuple[type[LoadStoreSpec], type[LoadStoreSpec], OffloadingHandler]]:
@@ -101,12 +110,7 @@ class CPUOffloadingSpec(OffloadingSpec):
                 raise Exception(
                     "CPU Offloading is currently only supported on CUDA-alike GPUs"
                 )
-
-            self._handlers = CpuGpuOffloadingHandlers(
-                kv_caches=kv_caches,
-                block_size_factor=self.block_size_factor,
-                num_cpu_blocks=self.num_blocks,
-            )
+            self._handlers = self._create_handlers(kv_caches)
 
         assert self._handlers is not None
         yield GPULoadStoreSpec, CPULoadStoreSpec, self._handlers.gpu_to_cpu_handler
