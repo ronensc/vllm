@@ -393,7 +393,7 @@ class TestTieringOffloadingManager:
             assert block.ref_cnt == 0
 
 
-class TestTiersOffloadingWithoutSecondaryTiers:
+class TestTieringOffloadingWithoutSecondaryTiers:
     """Test TieringOffloadingManager with no secondary tiers (backward compat)."""
 
     def test_works_without_secondary_tiers(self):
