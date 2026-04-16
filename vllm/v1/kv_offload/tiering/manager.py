@@ -36,6 +36,7 @@ from vllm.v1.kv_offload.abstract import (
     SecondaryTierManager,
 )
 from vllm.v1.kv_offload.cpu.manager import CPUOffloadingManager
+from vllm.v1.kv_offload.cpu.shared_offload_region import SharedOffloadRegion
 
 logger = init_logger(__name__)
 
@@ -49,6 +50,22 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
     accessing primary. This avoids confusion when reading TieringOffloadingManager
     code (e.g. calling prepare_load inside a cascade/store path would be misleading).
     """
+
+    def __init__(
+        self,
+        block_size: int,
+        num_blocks: int,
+        cache_policy: str = "lru",
+        enable_events: bool = False,
+        mmap_region: SharedOffloadRegion | None = None,
+    ):
+        super().__init__(
+            block_size=block_size,
+            num_blocks=num_blocks,
+            cache_policy=cache_policy,  # type: ignore[arg-type]
+            enable_events=enable_events,
+        )
+        self._mmap_region = mmap_region
 
     def prepare_write(self, keys) -> PrepareStoreOutput | None:
         """Allocate space in primary for a secondary->primary write (promotion)."""
@@ -68,27 +85,22 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
         decrementing ref_cnt."""
         self.complete_load(keys)
 
+    # TODO: rename to get_primary_kv_tensor
     def get_primary_kv_tensors(self) -> torch.Tensor:
         """
         Get the primary tier's KV cache tensor.
 
-        Returns the CPU tensor that stores the KV cache data.
-        TieringOffloadingManager will pass a memoryview of this tensor to secondary tier
-        managers for data transfer operations.
-
-        TODO: This is a placeholder returning a dummy zero tensor.
-        Actual implementation requires CPUOffloadingManager to maintain a
-        reference to the worker's CPU tensor.
+        Returns the flat int8 base tensor of the SharedOffloadRegion mmap.
+        TieringOffloadingManager passes a memoryview of this tensor to each
+        secondary tier manager for data transfer operations.
 
         Returns:
-            CPU tensor storing KV cache data. Currently returns
-            a dummy zero tensor as placeholder (wrong data).
+            Flat int8 CPU tensor backed by the shared mmap.
         """
-        # PRNOTE: This is a placeholder. The real implementation requires
-        # CPUOffloadingManager to hold a reference to the worker's CPU KV
-        # tensor and return it here. Until that's wired up, secondary tier
-        # managers will receive a memory view of a zero tensor (wrong data).
-        return torch.zeros(1)
+        assert self._mmap_region is not None, (
+            "mmap_region must be provided to CPUPrimaryTierOffloadingManager"
+        )
+        return self._mmap_region._base
 
 
 class TieringOffloadingManager(OffloadingManager):
@@ -137,6 +149,9 @@ class TieringOffloadingManager(OffloadingManager):
         # Wire each secondary tier with a long-lived memoryview of the primary
         # CPU tensor (one independent view per tier). Views are stored so they
         # can be released on shutdown().
+        # TODO: for world_size>1, secondary tiers must use row_stride
+        # (= cpu_page_size * world_size) as the per-block byte stride in the
+        # memoryview, not cpu_page_size alone. For world_size=1 both are equal.
         self._secondary_views: list[memoryview] = []
         cpu_tensor = primary_tier.get_primary_kv_tensors()
         for tier in self.secondary_tiers:
@@ -433,6 +448,9 @@ class TieringOffloadingManager(OffloadingManager):
         yield from self.primary_tier.take_events()
 
     def shutdown(self) -> None:
-        """Release memoryviews created during initialisation."""
+        """Release memoryviews and scheduler-side mmap."""
         for view in self._secondary_views:
             view.release()
+        if self.primary_tier._mmap_region is not None:
+            self.primary_tier._mmap_region.cleanup()
+            self.primary_tier._mmap_region = None

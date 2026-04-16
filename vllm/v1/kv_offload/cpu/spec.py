@@ -44,6 +44,10 @@ class CPUOffloadingSpec(OffloadingSpec):
             if kv_bytes_per_offloaded_block > 0
             else 0
         )
+        world_size = vllm_config.parallel_config.world_size
+        self.cpu_page_size_per_worker: int = (
+            kv_bytes_per_offloaded_block // world_size if world_size > 0 else 0
+        )
 
         # scheduler-side
         self._manager: OffloadingManager | None = None

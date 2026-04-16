@@ -40,16 +40,26 @@ Example configuration:
 }
 """
 
+from collections.abc import Iterator
+
+import torch
+
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.platforms import current_platform
 from vllm.v1.kv_cache_interface import KVCacheConfig
-from vllm.v1.kv_offload.abstract import OffloadingManager
+from vllm.v1.kv_offload.abstract import LoadStoreSpec, OffloadingManager
+from vllm.v1.kv_offload.cpu.shared_offload_region import SharedOffloadRegion
 from vllm.v1.kv_offload.cpu.spec import CPUOffloadingSpec
+from vllm.v1.kv_offload.mediums import CPULoadStoreSpec, GPULoadStoreSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
+from vllm.v1.kv_offload.spec import CanonicalKVCaches
 from vllm.v1.kv_offload.tiering.manager import (
     CPUPrimaryTierOffloadingManager,
     TieringOffloadingManager,
 )
+from vllm.v1.kv_offload.worker.cpu_gpu import CpuGpuOffloadingHandlers
+from vllm.v1.kv_offload.worker.worker import OffloadingHandler
 
 logger = init_logger(__name__)
 
@@ -77,6 +87,8 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
 
         # Scheduler-side (narrower type than CPUOffloadingSpec._manager)
         self._manager: TieringOffloadingManager | None = None
+        # Scheduler-side mmap (rank=None); kept for cleanup
+        self._scheduler_mmap: SharedOffloadRegion | None = None
 
     def _create_secondary_tier(self, tier_config: dict):
         """
@@ -134,6 +146,23 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
                 kv_events_config is not None and kv_events_config.enable_kv_cache_events
             )
 
+            # Create scheduler-side SharedOffloadRegion (rank=None) first so
+            # CPUPrimaryTierOffloadingManager can return _base from
+            # get_primary_kv_tensor(), which TieringOffloadingManager.__init__
+            # calls immediately to wire secondary tier memoryviews.
+            world_size = self.vllm_config.parallel_config.world_size
+            scheduler_mmap = SharedOffloadRegion(
+                instance_id=self.vllm_config.instance_id,
+                total_size_bytes=self.cpu_page_size_per_worker
+                * world_size
+                * self.num_blocks,
+                num_blocks=self.num_blocks,
+                rank=None,
+                num_workers=world_size,
+                cpu_page_size=self.cpu_page_size_per_worker,
+            )
+            self._scheduler_mmap = scheduler_mmap
+
             # Create primary tier (CPU-based)
             assert len(self.gpu_block_size) == 1
             offloaded_block_size = self.gpu_block_size[0] * self.block_size_factor
@@ -142,6 +171,7 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
                 num_blocks=self.num_blocks,
                 cache_policy=self.eviction_policy,  # type: ignore[arg-type]
                 enable_events=enable_events,
+                mmap_region=scheduler_mmap,
             )
 
             # Create secondary tiers
@@ -166,7 +196,7 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
             # Create TieringOffloadingManager. GPU↔CPU transfers use the inherited
             # get_handlers(); secondary tier transfers are handled by the
             # secondary tier managers and need no additional handlers here.
-            self._manager = TieringOffloadingManager(
+            tiering_manager = TieringOffloadingManager(
                 primary_tier=primary_tier,
                 secondary_tiers=secondary_tiers,
                 enable_events=enable_events,
@@ -174,7 +204,7 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
             # PRNOTE: should the store_filter apply to the TieringOffloadingManager or
             # to the primary CPU manager?
             self._manager = self._maybe_apply_store_filter(  # type: ignore[assignment]
-                self._manager
+                tiering_manager
             )
 
             logger.info(
@@ -186,3 +216,36 @@ class TiersOffloadingSpec(CPUOffloadingSpec):
             )
 
         return self._manager
+
+    def get_handlers(
+        self, kv_caches: CanonicalKVCaches
+    ) -> Iterator[tuple[type[LoadStoreSpec], type[LoadStoreSpec], OffloadingHandler]]:
+        if not self._handlers:
+            if not current_platform.is_cuda_alike():
+                raise Exception(
+                    "CPU Offloading is currently only supported on CUDA-alike GPUs"
+                )
+
+            world_size = self.vllm_config.parallel_config.world_size
+            rank = torch.accelerator.current_device_index()
+            worker_mmap = SharedOffloadRegion(
+                instance_id=self.vllm_config.instance_id,
+                total_size_bytes=self.cpu_page_size_per_worker
+                * world_size
+                * self.num_blocks,
+                num_blocks=self.num_blocks,
+                rank=rank,
+                num_workers=world_size,
+                cpu_page_size=self.cpu_page_size_per_worker,
+            )
+
+            self._handlers = CpuGpuOffloadingHandlers(
+                kv_caches=kv_caches,
+                block_size_factor=self.block_size_factor,
+                num_cpu_blocks=self.num_blocks,
+                mmap_region=worker_mmap,
+            )
+
+        assert self._handlers is not None
+        yield GPULoadStoreSpec, CPULoadStoreSpec, self._handlers.gpu_to_cpu_handler
+        yield CPULoadStoreSpec, GPULoadStoreSpec, self._handlers.cpu_to_gpu_handler
