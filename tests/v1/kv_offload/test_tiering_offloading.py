@@ -11,11 +11,12 @@ These tests verify:
 5. Eviction coordination between tiers
 """
 
+from collections.abc import Iterable
+
 import pytest
 import torch
 
-from vllm.v1.core.kv_cache_utils import BlockHash
-from vllm.v1.kv_offload.abstract import JobMetadata
+from vllm.v1.kv_offload.abstract import JobMetadata, OffloadKey, make_offload_key
 from vllm.v1.kv_offload.mediums import CPULoadStoreSpec
 from vllm.v1.kv_offload.secondary_tiers.dummy import DummySecondaryTier
 from vllm.v1.kv_offload.tiering.manager import (
@@ -24,9 +25,8 @@ from vllm.v1.kv_offload.tiering.manager import (
 )
 
 
-def make_block_hash(req_id: int, block_idx: int) -> BlockHash:
-    """Helper to create block hashes for testing."""
-    return BlockHash(f"{req_id}:{block_idx}".encode())
+def to_keys(int_ids: Iterable[int]) -> list[OffloadKey]:
+    return [make_offload_key(str(i).encode(), 0) for i in int_ids]
 
 
 class TestDummySecondaryTier:
@@ -37,7 +37,7 @@ class TestDummySecondaryTier:
         tier = DummySecondaryTier(tier_name="Test", max_blocks=10)
 
         # Initially empty
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
         assert tier.lookup(blocks) == 0
 
         # Store blocks (simulate with direct insertion for testing)
@@ -54,7 +54,7 @@ class TestDummySecondaryTier:
         """Test that in-flight blocks cause lookup to return None."""
         tier = DummySecondaryTier(tier_name="Test", max_blocks=10)
 
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Mark first block as in-flight
         tier.in_flight[blocks[0]] = 1
@@ -67,7 +67,7 @@ class TestDummySecondaryTier:
         tier = DummySecondaryTier(tier_name="Test", max_blocks=3)
 
         # Fill tier to capacity
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
         for block in blocks:
             tier.blocks[block] = True
 
@@ -77,7 +77,7 @@ class TestDummySecondaryTier:
         tier.touch([blocks[0]])
 
         # Store new block should evict blocks[1] (least recently used)
-        new_block = make_block_hash(1, 3)
+        new_block = to_keys([3])[0]
 
         mock_tensor = torch.zeros((4, 16), dtype=torch.float32)
         tier.set_primary_view(memoryview(mock_tensor.numpy()))
@@ -104,7 +104,7 @@ class TestDummySecondaryTier:
         """Test simulated async behavior."""
         tier = DummySecondaryTier(tier_name="Test", max_blocks=10, simulate_async=True)
 
-        blocks = [make_block_hash(1, i) for i in range(2)]
+        blocks = to_keys(range(2))
 
         mock_tensor = torch.zeros((10, 16), dtype=torch.float32)
         tier.set_primary_view(memoryview(mock_tensor.numpy()))
@@ -158,7 +158,7 @@ class TestTieringOffloadingManager:
 
     def test_basic_store_to_primary(self, manager_setup):
         """Test basic store operation to primary tier."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Prepare store
         result = self.manager.prepare_store(blocks)
@@ -173,7 +173,7 @@ class TestTieringOffloadingManager:
 
     def test_cascade_to_all_secondary_tiers(self, manager_setup):
         """Test that blocks are cascaded to ALL secondary tiers."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Store to primary
         result = self.manager.prepare_store(blocks)
@@ -195,7 +195,7 @@ class TestTieringOffloadingManager:
 
     def test_ref_cnt_protection_during_cascade(self, manager_setup):
         """Test that ref_cnt protects blocks during cascade."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Store to primary
         result = self.manager.prepare_store(blocks)
@@ -219,7 +219,7 @@ class TestTieringOffloadingManager:
 
     def test_lookup_from_primary(self, manager_setup):
         """Test lookup when blocks are in primary tier."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Store blocks
         self.manager.prepare_store(blocks)
@@ -230,7 +230,7 @@ class TestTieringOffloadingManager:
 
     def test_promotion_from_secondary(self, manager_setup):
         """Test promotion of blocks from secondary to primary tier."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Manually add blocks to secondary tier (simulate previous cascade)
         for block in blocks:
@@ -251,7 +251,7 @@ class TestTieringOffloadingManager:
 
     def test_partial_lookup(self, manager_setup):
         """Test lookup with partial hits."""
-        blocks = [make_block_hash(1, i) for i in range(5)]
+        blocks = to_keys(range(5))
 
         # Store first 3 blocks to primary
         self.manager.prepare_store(blocks[:3])
@@ -264,7 +264,7 @@ class TestTieringOffloadingManager:
         """Test eviction in primary tier when capacity is exceeded."""
         # Primary tier has capacity of 5 blocks
         # First, fill the primary tier
-        blocks = [make_block_hash(1, i) for i in range(5)]
+        blocks = to_keys(range(5))
         result = self.manager.prepare_store(blocks)
         assert result is not None
         assert len(result.keys_to_store) == 5
@@ -274,7 +274,7 @@ class TestTieringOffloadingManager:
         self.manager._process_finished_jobs()
 
         # Now try to store 2 more blocks (should trigger eviction)
-        more_blocks = [make_block_hash(2, i) for i in range(2)]
+        more_blocks = to_keys(range(5, 7))
         result = self.manager.prepare_store(more_blocks)
 
         # Should evict 2 blocks from primary tier
@@ -284,7 +284,7 @@ class TestTieringOffloadingManager:
 
     def test_touch_propagates_to_all_tiers(self, manager_setup):
         """Test that touch() propagates to all tiers."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Store blocks
         self.manager.prepare_store(blocks)
@@ -308,7 +308,7 @@ class TestTieringOffloadingManager:
 
     def test_failed_store_no_cascade(self, manager_setup):
         """Test that failed GPU→primary store doesn't cascade."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Prepare store
         result = self.manager.prepare_store(blocks)
@@ -347,7 +347,7 @@ class TestTieringOffloadingManager:
         )
 
         # First, store 5 blocks to fill the small tier
-        blocks1 = [make_block_hash(1, i) for i in range(5)]
+        blocks1 = to_keys(range(5))
         result = manager.prepare_store(blocks1)
         assert result is not None
         manager.complete_store(blocks1, success=True)
@@ -358,7 +358,7 @@ class TestTieringOffloadingManager:
         assert large_tier.get_num_blocks() == 5
 
         # Now store 3 more blocks - small tier should evict 3 blocks
-        blocks2 = [make_block_hash(2, i) for i in range(3)]
+        blocks2 = to_keys(range(5, 8))
         result = manager.prepare_store(blocks2)
         assert result is not None
         manager.complete_store(blocks2, success=True)
@@ -372,7 +372,7 @@ class TestTieringOffloadingManager:
 
     def test_prepare_store_processes_finished_jobs_first(self, manager_setup):
         """Test that prepare_store() calls _process_finished_jobs() first."""
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Store blocks
         self.manager.prepare_store(blocks)
@@ -384,7 +384,7 @@ class TestTieringOffloadingManager:
             assert block.ref_cnt == 2
 
         # Call prepare_store again (should process finished jobs first)
-        more_blocks = [make_block_hash(2, i) for i in range(2)]
+        more_blocks = to_keys(range(3, 5))
         self.manager.prepare_store(more_blocks)
 
         # Original blocks should now have ref_cnt = 0
@@ -409,7 +409,7 @@ class TestTieringOffloadingWithoutSecondaryTiers:
             primary_tier=primary_tier, secondary_tiers=[]
         )
 
-        blocks = [make_block_hash(1, i) for i in range(3)]
+        blocks = to_keys(range(3))
 
         # Should work like a regular OffloadingManager
         result = manager.prepare_store(blocks)
