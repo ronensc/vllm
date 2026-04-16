@@ -89,17 +89,20 @@ class CPUPrimaryTierOffloadingManager(CPUOffloadingManager):
         """
         Get the primary tier's KV cache tensor.
 
-        Returns the flat int8 base tensor of the SharedOffloadRegion mmap.
-        TieringOffloadingManager passes a memoryview of this tensor to each
-        secondary tier manager for data transfer operations.
+        Returns a 2-D int8 tensor of shape (num_blocks, row_stride_bytes)
+        backed by the SharedOffloadRegion mmap, where row_stride_bytes =
+        cpu_page_size * world_size.  Secondary tiers address block b as
+        view[b], and view.strides[0] gives the per-block byte stride.
 
         Returns:
-            Flat int8 CPU tensor backed by the shared mmap.
+            2-D int8 CPU tensor of shape (num_blocks, row_stride_bytes).
         """
         assert self._mmap_region is not None, (
             "mmap_region must be provided to CPUPrimaryTierOffloadingManager"
         )
-        return self._mmap_region._base
+        return self._mmap_region._base.view(
+            self._mmap_region.num_blocks, self._mmap_region._row_stride
+        )
 
 
 class TieringOffloadingManager(OffloadingManager):
@@ -148,9 +151,6 @@ class TieringOffloadingManager(OffloadingManager):
         # Wire each secondary tier with a long-lived memoryview of the primary
         # CPU tensor (one independent view per tier). Views are stored so they
         # can be released on shutdown().
-        # TODO: for world_size>1, secondary tiers must use row_stride
-        # (= cpu_page_size * world_size) as the per-block byte stride in the
-        # memoryview, not cpu_page_size alone. For world_size=1 both are equal.
         self._secondary_views: list[memoryview] = []
         cpu_tensor = primary_tier.get_primary_kv_tensor()
         for tier in self.secondary_tiers:
