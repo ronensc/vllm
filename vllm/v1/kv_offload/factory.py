@@ -57,7 +57,7 @@ OffloadingSpecFactory.register_spec(
     "CPUOffloadingSpec", "vllm.v1.kv_offload.cpu.spec", "CPUOffloadingSpec"
 )
 OffloadingSpecFactory.register_spec(
-    "TiersOffloadingSpec",
+    "TieringOffloadingSpec",
     "vllm.v1.kv_offload.tiering.spec",
-    "TiersOffloadingSpec",
+    "TieringOffloadingSpec",
 )

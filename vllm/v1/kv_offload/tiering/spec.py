@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """
-TiersOffloadingSpec: Spec for multi-tier KV cache offloading.
+TieringOffloadingSpec: Spec for multi-tier KV cache offloading.
 
 This spec creates a TieringOffloadingManager with a CPU-based primary tier
 and configurable secondary tiers (e.g., Storage, Network).
@@ -64,7 +64,7 @@ from vllm.v1.kv_offload.worker.worker import OffloadingHandler
 logger = init_logger(__name__)
 
 
-class TiersOffloadingSpec(CPUOffloadingSpec):
+class TieringOffloadingSpec(CPUOffloadingSpec):
     """
     Spec for multi-tier KV cache offloading.
 
