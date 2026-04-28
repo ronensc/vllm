@@ -130,7 +130,7 @@ class KVConnectorFactory:
         elif connector_name in cls._registry:
             connector_cls = cls._registry[connector_name]()
         else:
-            raise ValueError(f"Unsupported connector type: {connector_name}")
+            raise ValueError(f"Unsupported connector type: {connector_name}. Supported {cls._registry.keys()}")
         return connector_cls, compat_sig
 
     @classmethod
