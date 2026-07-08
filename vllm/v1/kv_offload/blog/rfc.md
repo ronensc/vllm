@@ -113,22 +113,10 @@ When `TieringOffloadingManager.lookup()` is invoked:
 
 The manager calls `get_finished_jobs()` on all secondary tiers each scheduling cycle to finalize completed jobs.
 
-## Potential Secondary Tiers
+## Available Secondary Tiers
 
-- Storage -- This is the obvious secondary tier. Can include:
+- **File System** (`tiering/fs/`) -- Local or networked file system storage using async I/O via a thread pool.
 
-    - File System API
+- **Object Storage** (`tiering/obj/`) -- S3-compatible object storage for shared remote KV caches.
 
-    - Object Storage
-
-    - Key-Value Store
-
-        - Can be either shared (remote) or local storage
-
-- PD disaggregation -- The current PD connector ("NIXL connector") in vLLM is GPU to GPU communication. Having an alternative CPU to CPU implementation while introduces more hops and therefore more latency, has several benefits:
-
-    - Quicker offloading on the P node, once moved to local CPU can release GPU memory.
-
-    - Shorter time GPU memory required on the D node. Only need to allocate GPU buffers after KV data arrives on the D node CPU memory.
-
-- P2P -- a generalization of the PD setting is a general P2P communication between nodes.
+- **P2P** (`tiering/p2p/`) -- CPU-to-CPU KV transfer between nodes (e.g. PD disaggregation). Uses NIXL for the data transport and ZMQ for control plane coordination.
