@@ -48,7 +48,7 @@ In order to facilitate the design changes above we are implementing the changes 
 
 The native KV offloading in vLLM v1 currently supports offloading **from GPU memory** to an external location (like CPU memory). This RFC extends the design to allow offloading **from CPU memory** to additional tiers such as local storage, object storage, and remote nodes (P/D disaggregation).
 
-![Tiering Architecture](https://github.com/user-attachments/assets/98ef7014-2071-4517-8eb4-6bf282f40599)
+![Tiering Architecture](tier-diagram-v4.excalidraw.svg)
 
 The `OffloadingConnector` interface is unchanged, it holds a single `OffloadingManager`. The new `TieringManager` implements that interface and orchestrates the tier hierarchy internally.
 
