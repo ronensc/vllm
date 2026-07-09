@@ -1,30 +1,6 @@
 # Multi-Tier KV Offloading in vLLM
 
-Based on:
-[RFC]: Multi-tier KV offloading via the vLLM offloading connector
-<https://github.com/vllm-project/vllm/issues/38260>
-
-## Motivation
-
-To date, vLLM offers native KV offloading to CPU memory but does not support further offloading from CPU memory to other tiers such as storage. Implementations for storage offload should either work directly with storage or implement their own CPU offloading as an additional tier. This document describes a high level design to natively support multi-tier KV offloading in vLLM.
-
-The architecture supports a single primary tier, in most cases CPU DRAM, and multiple secondary tiers.
-
-## Goals
-
-- Allow simple and native integration of the current vLLM CPU offloading  with secondary tiers such as storage, or connection with other vLLM nodes for PD disaggregation settings or P2P communication of KV data.
-
-- Utilize async gpu<->cpu transfers for primary tier and async lookup for secondary tier loads
-
-- Support for HMA models out of the box
-
-- Simple, clean and performant implementation of PD communication via  the CPU tier
-
-What we don't intend to support
-
-- Direct GPU access (neither GPU-storage or GPU-GPU communication)
-
-- Limited flexibility for variance in block size. While we allow vLLM block size to vary, CPU block size must be constant across all vLLM nodes (and a multiple of the underlying vLLM block size).
+vLLM's [KV offloading connector](https://vllm.ai/blog/kv-offloading-connector) moves KV cache blocks from GPU to CPU memory. But CPU DRAM is limited. What if you could transparently cascade those blocks further, to local storage, object storage, or even other nodes? The multi-tier offloading framework makes this possible with a simple 4-method interface that any storage backend can implement.
 
 ## High Level Design
 
