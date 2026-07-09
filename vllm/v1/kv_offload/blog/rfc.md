@@ -81,6 +81,8 @@ class JobResult:
     success: bool
 ```
 
+The full interface includes additional optional methods for lifecycle management, metrics, and shutdown.
+
 The zero-copy mechanism is straightforward: each secondary tier receives `primary_kv_view` (a `memoryview` into the primary tier's CPU KV tensors) at construction time. When `submit_store()` is called, the tier reads from `primary_kv_view` at the offsets identified by `block_ids`. When `submit_load()` is called, the tier writes into `primary_kv_view` at those same offsets. No intermediate copies are needed.
 
 ### Key Design Principles
